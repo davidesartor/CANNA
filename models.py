@@ -15,9 +15,9 @@ class ConditionalFlowMatching(LightningModule):
     def push(self, x, y, n_steps=16, verbose=False):
         if verbose:
             print("Pushing data through flow")
+        ts = torch.arange(0, 1, 1 / n_steps, device=self.device).expand(x.shape[0], -1)
+        x, y = x.to(self.device), y.to(self.device).expand((x.shape[0], *y.shape))
         with torch.no_grad():
-            y = y.expand((x.shape[0], *y.shape))
-            ts = torch.arange(0, 1, 1 / n_steps).expand(x.shape[0], -1)
             for t in tqdm(ts.T, disable=not verbose):
                 x = x + self(t, x, y) / n_steps
         return x
@@ -60,10 +60,10 @@ class MLP(nn.Sequential):
 
 
 class MLPCNF(ConditionalFlowMatching):
-    def __init__(self, dim, hidden_dim=512, depth=1, norm=True, **kwargs):
+    def __init__(self, dim, obs_dim=None, hidden_dim=512, depth=1, norm=True, **kwargs):
         super().__init__(**kwargs)
         self.flow = MLP(
-            in_dim=2 * dim + 1,
+            in_dim=dim + (obs_dim or dim) + 1,
             out_dim=dim,
             hidden_dim=hidden_dim,
             depth=depth,
