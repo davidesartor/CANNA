@@ -73,9 +73,9 @@ class PointDataset(PosteriorFlowDataset):
 class SinusoidDataset(PosteriorFlowDataset):
     def __init__(
         self,
-        sample_rate=1,
-        observation_time=16.0,
-        noise_cov=0.1,
+        sample_rate=1.0,
+        observation_time=256.0,
+        noise_cov=1.0,
         amp_range=(0.1, 10),
         omg_range=(0.01 * np.pi, 0.1 * np.pi),
         phi_range=(-np.pi, np.pi),
@@ -100,11 +100,13 @@ class SinusoidDataset(PosteriorFlowDataset):
     def clean_signal(self, x):
         amp, omg, phi = np.split(x, 3, axis=-1)
         t = self.observation_times
-        return amp * np.sin(omg * t + phi)
+        y = amp * np.sin(omg * t + phi)
+        return y
 
     def sample_observation(self, x):
         noise = self.noise_distr.rvs(len(x))
-        return self.clean_signal(x) + noise
+        y = self.clean_signal(x) + noise
+        return y[..., None]
 
     def log_prior(self, x):
         amp, omg, phi = np.split(x, 3, axis=-1)
@@ -114,4 +116,4 @@ class SinusoidDataset(PosteriorFlowDataset):
         return log_prior_amp + log_prior_omg + log_prior_phi
 
     def log_likelihood(self, x, y):
-        return self.noise_distr.logpdf(y - self.clean_signal(x))
+        return self.noise_distr.logpdf(y[..., 0] - self.clean_signal(x))

@@ -71,5 +71,7 @@ class MLPCNF(ConditionalFlowMatching):
         )
 
     def __call__(self, t, x, y):
-        h = torch.cat([t.unsqueeze(-1), x, y], dim=-1)
+        t = t.unsqueeze(-1)
+        y = y.flatten(1)
+        h = torch.cat([t, x, y], dim=-1)
         return self.flow(h)
