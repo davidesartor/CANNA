@@ -12,14 +12,19 @@ class ConditionalFlowMatching(LightningModule):
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.hparams["lr"])
 
-    def push(self, x, y, n_steps=16, verbose=False):
+    def push(self, x, y, n_steps=4, verbose=False):
         if verbose:
             print("Pushing data through flow")
-        ts = torch.arange(0, 1, 1 / n_steps, device=self.device).expand(x.shape[0], -1)
+        dt = 1 / n_steps
+        ts = torch.arange(0, 1, dt, device=self.device).expand(x.shape[0], -1)
         x, y = x.to(self.device), y.to(self.device).expand((x.shape[0], *y.shape))
         with torch.no_grad():
-            for t in tqdm(ts.T, disable=not verbose):
-                x = x + self(t, x, y) / n_steps
+            for t in ts.T:
+                k1 = self(t, x, y)
+                k2 = self(t + dt / 2, x + dt / 2 * k1, y)
+                k3 = self(t + dt / 2, x + dt / 2 * k2, y)
+                k4 = self(t + dt, x + dt * k3, y)
+                x = x + dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
         return x
 
     def conditional_map_derivative(self, t, x0, x1):
@@ -51,10 +56,12 @@ class MLP(nn.Sequential):
         layers.append(nn.Linear(in_dim, hidden_dim))
         layers.append(nn.GELU())
         for _ in range(depth - 1):
-            layers.append(nn.Linear(hidden_dim, hidden_dim))
-            layers.append(nn.GELU())
             if norm:
                 layers.append(nn.LayerNorm(hidden_dim))
+            layers.append(nn.Linear(hidden_dim, hidden_dim))
+            layers.append(nn.GELU())
+        if norm:
+            layers.append(nn.LayerNorm(hidden_dim))
         layers.append(nn.Linear(hidden_dim, out_dim))
         super().__init__(*layers)
 

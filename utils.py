@@ -9,7 +9,7 @@ def corner_plot(
     verbose=False,
     samples=32 * 1024,
     examples=1,
-    ode_steps=8,
+    ode_steps=4,
     plot_prior=False,
 ):
     for t, x0, x1, y in tqdm(dataset.dataloader(batch_size=samples, batches=examples)):
