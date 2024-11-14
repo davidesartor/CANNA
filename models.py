@@ -19,24 +19,13 @@ class ConditionalFlowMatching(LightningModule):
         x, y = x.to(self.device), y.to(self.device).expand((x.shape[0], *y.shape))
         with torch.no_grad():
             for t in tqdm(ts.T, disable=not verbose):
-                x = x + self(t, x, y) / n_steps
+                x = x + self(t, x, y) / n_steps  # ? is /n_steps supposed to be here?
         return x
 
-    def conditional_map_derivative(self, t, x0, x1):
-        return x1 - x0
-
-    def conditional_map(self, t, x0, x1):
-        x_jitter = self.hparams["coupling_jitter"] * torch.randn_like(x0)
-        while t.ndim < x0.ndim:
-            t = t.unsqueeze(-1)
-        d_x = self.conditional_map_derivative(t, x0, x1)
-        xt = x0 + t * d_x + x_jitter
-        return xt, d_x
 
     def training_step(self, batch, batch_idx):
-        t, x0, x1, y = batch
-        x, d_x = self.conditional_map(t, x0, x1)
-        flow = self(t, x, y)
+        t, x_t, d_x, y = batch # y is the observation corresponding to the distribution x1 (e.g. the observed noisy sine wave)
+        flow = self(t, x_t, y) 
         loss = nn.functional.mse_loss(flow, d_x)
         self.log("flow_loss", loss, prog_bar=True)
         return loss

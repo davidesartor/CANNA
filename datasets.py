@@ -1,3 +1,4 @@
+import torch
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 from scipy.stats import multivariate_normal, loguniform, uniform
@@ -12,12 +13,15 @@ class PosteriorFlowDataset(Dataset):
         return DataLoader(self, batch_size=None, sampler=sampler, **kwargs)
 
     def __getitem__(self, batch_size):
+        # Return t, x_t, d_x, y
         t = np.random.rand(batch_size)
         x0 = self.sample_params(batch_size)
         x1 = self.sample_params(batch_size)
         y = self.sample_observation(x1)
+        x_t, dx = self.conditional_map(t, x0, x1)
+
         to_float = lambda x: x.astype(np.float32)
-        return tuple(map(to_float, (t, x0, x1, y)))
+        return tuple(map(to_float, (t, x_t, dx, y)))
 
     def log_posterior(self, params, observation):
         log_prior = self.log_prior(params)
@@ -39,6 +43,11 @@ class PosteriorFlowDataset(Dataset):
 
     def log_likelihood(self, params, observation):
         raise NotImplementedError
+    
+    def conditional_map(self, t, x0, x1):
+        #! Precompute oracoli in dataset
+        # Return x_t, dx.
+        raise NotImplementedError 
 
 
 class PointDataset(PosteriorFlowDataset):
@@ -79,6 +88,7 @@ class SinusoidDataset(PosteriorFlowDataset):
         amp_range=(0.1, 10),
         omg_range=(0.01 * np.pi, 0.1 * np.pi),
         phi_range=(-np.pi, np.pi),
+        coupling_jitter=0.0
     ):
         self.observation_times = np.arange(0.0, observation_time, sample_rate)
         self.amp_prior = loguniform(*amp_range)
@@ -86,6 +96,7 @@ class SinusoidDataset(PosteriorFlowDataset):
         self.phi_prior = uniform(*phi_range)
         noise_cov = noise_cov * np.eye(len(self.observation_times))
         self.noise_distr = multivariate_normal(cov=noise_cov)
+        self.coupling_jitter = coupling_jitter
 
     @property
     def parameter_names(self):
@@ -115,3 +126,20 @@ class SinusoidDataset(PosteriorFlowDataset):
 
     def log_likelihood(self, x, y):
         return self.noise_distr.logpdf(y - self.clean_signal(x))
+    
+    def conditional_map_derivative(self, t, x0, x1):
+        # Vogliamo una lista [topo_param_1, ..., topo_param_n]
+        #? Forse meglio fare una sola funzione conditional map
+        #? since we have to transport depending on the topology
+        return x1 - x0
+
+    def conditional_map(self, t, x0, x1):
+        #! Precompute oracoli in dataset
+        x_jitter = self.coupling_jitter * np.random.randn(*x0.shape)
+        while t.ndim < x0.ndim:
+            t = np.expand_dims(t, axis=-1)
+        d_x = self.conditional_map_derivative(t, x0, x1)
+        xt = x0 + t * d_x + x_jitter
+        return xt, d_x
+    
+
