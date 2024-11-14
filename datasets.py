@@ -143,3 +143,91 @@ class SinusoidDataset(PosteriorFlowDataset):
         return xt, d_x
     
 
+
+class RiemmannianSinusoidDataset(PosteriorFlowDataset):
+    def __init__(
+        self,
+        sample_rate=1,
+        observation_time=16.0,
+        noise_cov=0.1,
+        amp_range=(0.1, 10),
+        omg_range=(0.01 * np.pi, 0.1 * np.pi),
+        phi_range=(-np.pi, np.pi),
+        coupling_jitter=0.0
+    ):
+        self.observation_times = np.arange(0.0, observation_time, sample_rate)
+        self.amp_prior = loguniform(*amp_range)
+        self.omg_prior = loguniform(*omg_range)
+        self.phi_prior = uniform(*phi_range)
+        noise_cov = noise_cov * np.eye(len(self.observation_times))
+        self.noise_distr = multivariate_normal(cov=noise_cov)
+        self.coupling_jitter = coupling_jitter
+
+    @property
+    def parameter_names(self):
+        return "A", "ω", "φ"
+
+    def sample_params(self, batch_size):
+        amp = self.amp_prior.rvs(batch_size)
+        omg = self.omg_prior.rvs(batch_size)
+        phi = self.phi_prior.rvs(batch_size)
+        return np.stack([amp, omg, phi], axis=-1)
+
+    def clean_signal(self, x):
+        amp, omg, phi = np.split(x, 3, axis=-1)
+        t = self.observation_times
+        return amp * np.sin(omg * t + phi)
+
+    def sample_observation(self, x):
+        noise = self.noise_distr.rvs(len(x))
+        return self.clean_signal(x) + noise
+
+    def log_prior(self, x):
+        amp, omg, phi = np.split(x, 3, axis=-1)
+        log_prior_amp = self.amp_prior.logpdf(amp)
+        log_prior_omg = self.omg_prior.logpdf(omg)
+        log_prior_phi = self.phi_prior.logpdf(phi)
+        return log_prior_amp + log_prior_omg + log_prior_phi
+
+    def log_likelihood(self, x, y):
+        return self.noise_distr.logpdf(y - self.clean_signal(x))
+    
+    def exponential_map(self, x, u):
+        norm_u = np.linalg.norm(u)
+        return x * np.cos(norm_u) + (u/norm_u) * np.sin(norm_u)
+    
+    def log_map(self, x, y):
+        theta = np.arccos(np.inner(x,y))
+        return (theta / np.sin(theta)) * (y - np.cos(theta)*x)
+    
+    def conditional_map_derivative(self, t, x0, x1, phi_t):
+        amp_0, omg_0, phi_0 = np.split(x0, 3, axis=-1)
+        amp_1, omg_1, phi_1 = np.split(x1, 3, axis=-1)
+        d_amp = amp_1 - amp_0
+        d_omg = omg_1 - omg_0
+        d_phi = self.log_map(phi_t, x1) / (1.0 - t)
+
+        return d_amp, d_omg, d_phi
+
+    def conditional_map(self, t, x0, x1):
+        #! Precompute oracoles in dataset
+        x_jitter = self.coupling_jitter * np.random.randn(*x0.shape)
+        while t.ndim < x0.ndim:
+            t = np.expand_dims(t, axis=-1)
+
+        # Note that it is important to compute phi_t before d_phi
+        amp_0, omg_0, phi_0 = np.split(x0, 3, axis=-1)
+        amp_1, omg_1, phi_1 = np.split(x1, 3, axis=-1)
+        amp_t = amp_0 + t * d_amp + x_jitter
+        omg_t = omg_0 + t * d_omg + x_jitter
+        phi_t = self.exponential_map(phi_0, t*self.log_map(phi_0, phi_1))
+
+        d_amp, d_omg, d_phi = self.conditional_map_derivative(t, x0, x1, phi_t)
+    
+
+        x_t = np.stack([amp_t, omg_t, phi_t], axis=-1)
+        d_x = np.stack([d_amp, d_omg, d_phi], axis=-1)
+
+        return x_t, d_x
+    
+
