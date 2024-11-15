@@ -24,10 +24,10 @@ class ConditionalFlowMatching(LightningModule):
 
 
     def training_step(self, batch, batch_idx):
-        t, x_t, d_x, y = batch # y is the observation corresponding to the distribution x1 (e.g. the observed noisy sine wave)
+        t, x_t, d_x, y, x0, x1 = batch # y is the observation corresponding to the distribution x1 (e.g. the observed noisy sine wave)
         flow = self(t, x_t, y) 
         loss = nn.functional.mse_loss(flow, d_x)
-        self.log("flow_loss", loss, prog_bar=True)
+        self.log("flow_loss", loss, prog_bar=True, on_epoch=True, on_step=False)
         return loss
 
     def __call__(self, t, x, y):

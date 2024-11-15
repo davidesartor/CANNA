@@ -12,7 +12,7 @@ def corner_plot(
     ode_steps=8,
     plot_prior=False,
 ):
-    for t, x0, x1, y in tqdm(dataset.dataloader(batch_size=samples, batches=examples)):
+    for t, x_t, dx, y, x0, x1 in tqdm(dataset.dataloader(batch_size=samples, batches=examples)):
         y, x_true = y[0], x1[0]
 
         # sample using CNF

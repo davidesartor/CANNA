@@ -1,4 +1,4 @@
-from datasets import SinusoidDataset
+from datasets import SinusoidDataset, RiemmannianSinusoidDataset
 from models import MLPCNF
 from lightning import Trainer
 from lightning.pytorch.callbacks import RichModelSummary
@@ -8,7 +8,8 @@ if __name__ == "__main__":
     """
     Auxiliary file to run training from a python file instead of notebooks
     """
-    dataset = SinusoidDataset()
+    dataset = RiemmannianSinusoidDataset()# RiemmannianSinusoidDataset()
+
 
     model = MLPCNF(
         dim=3,

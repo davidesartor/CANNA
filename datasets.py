@@ -21,7 +21,7 @@ class PosteriorFlowDataset(Dataset):
         x_t, dx = self.conditional_map(t, x0, x1)
 
         to_float = lambda x: x.astype(np.float32)
-        return tuple(map(to_float, (t, x_t, dx, y)))
+        return tuple(map(to_float, (t, x_t, dx, y, x0, x1)))
 
     def log_posterior(self, params, observation):
         log_prior = self.log_prior(params)
@@ -191,21 +191,34 @@ class RiemmannianSinusoidDataset(PosteriorFlowDataset):
 
     def log_likelihood(self, x, y):
         return self.noise_distr.logpdf(y - self.clean_signal(x))
-    
+
     def exponential_map(self, x, u):
-        norm_u = np.linalg.norm(u)
-        return x * np.cos(norm_u) + (u/norm_u) * np.sin(norm_u)
-    
+        """
+        exp_x: T_x M -> M
+        """
+        # Sphere
+        # norm_u = np.linalg.norm(u)
+        # return x * np.cos(norm_u) + (u/norm_u) * np.sin(norm_u)
+        # Flat torus https://github.com/facebookresearch/riemannian-fm/blob/main/manifm/manifolds/torus.py#L4
+        return (x + u) % (2 * np.pi)
+
     def log_map(self, x, y):
-        theta = np.arccos(np.inner(x,y))
-        return (theta / np.sin(theta)) * (y - np.cos(theta)*x)
-    
-    def conditional_map_derivative(self, t, x0, x1, phi_t):
+        """
+        log_x: M -> T_x M
+        """
+        # Sphere
+        # theta = np.arccos(np.inner(x,y))
+        # return (theta / np.sin(theta)) * (y - np.cos(theta)*x)
+        # Flat torus https://github.com/facebookresearch/riemannian-fm/blob/main/manifm/manifolds/torus.py#L4
+        return np.arctan2(np.sin(y - x), np.cos(y - x))
+
+
+    def conditional_map_derivative(self, t, x0, x1):
         amp_0, omg_0, phi_0 = np.split(x0, 3, axis=-1)
         amp_1, omg_1, phi_1 = np.split(x1, 3, axis=-1)
         d_amp = amp_1 - amp_0
         d_omg = omg_1 - omg_0
-        d_phi = self.log_map(phi_t, x1) / (1.0 - t)
+        d_phi = self.log_map(phi_0, phi_1) #% (2 * np.pi)
 
         return d_amp, d_omg, d_phi
 
@@ -218,15 +231,17 @@ class RiemmannianSinusoidDataset(PosteriorFlowDataset):
         # Note that it is important to compute phi_t before d_phi
         amp_0, omg_0, phi_0 = np.split(x0, 3, axis=-1)
         amp_1, omg_1, phi_1 = np.split(x1, 3, axis=-1)
-        amp_t = amp_0 + t * d_amp + x_jitter
-        omg_t = omg_0 + t * d_omg + x_jitter
+
+        #? In the paper phi_0 and phi_1 are reversed?
         phi_t = self.exponential_map(phi_0, t*self.log_map(phi_0, phi_1))
 
-        d_amp, d_omg, d_phi = self.conditional_map_derivative(t, x0, x1, phi_t)
-    
+        d_amp, d_omg, d_phi = self.conditional_map_derivative(t, x0, x1)
+        amp_t = amp_0 + t * d_amp# + x_jitter
+        omg_t = omg_0 + t * d_omg# + x_jitter
 
-        x_t = np.stack([amp_t, omg_t, phi_t], axis=-1)
-        d_x = np.stack([d_amp, d_omg, d_phi], axis=-1)
+
+        x_t = np.stack([amp_t, omg_t, phi_t], axis=-1).squeeze(1)
+        d_x = np.stack([d_amp, d_omg, d_phi], axis=-1).squeeze(1)
 
         return x_t, d_x
     
