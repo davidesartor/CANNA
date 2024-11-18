@@ -1,3 +1,4 @@
+import numpy as np
 from tqdm.auto import tqdm
 import corner
 from mcmc import emcee_sample
@@ -12,16 +13,23 @@ def corner_plot(
     ode_steps=8,
     plot_prior=False,
 ):
-    for t, x_t, dx, y, x0, x1 in tqdm(dataset.dataloader(batch_size=samples, batches=examples)):
-        y, x_true = y[0], x1[0]
+    dataset.dataloader(batch_size=samples, batches=examples)
+    for i in tqdm(range(examples)):
+        x0 = dataset.sample_params(samples)
+        x1 = dataset.sample_params(1)
+        y = dataset.sample_observation(x1).squeeze()
+
+        # hack to flatten #TODO: add flatten params
+        x0 = dataset.conditional_map(np.zeros(samples), x0, x0)
+        x1 = dataset.conditional_map(np.ones(1), x1, x1).squeeze()
 
         # sample using CNF
         x_cnf = model.push(x0, y, verbose=verbose, n_steps=ode_steps).cpu().numpy()
 
         # sample using MCMC
         x_mcmc = emcee_sample(
-            log_prob=lambda x: dataset.log_posterior(x, y.numpy()),
-            x0=x_true.numpy(),
+            log_prob=lambda x: dataset.log_posterior(x, y),
+            x0=x1,
             walkers=64,
             steps=len(x_cnf) // 64,
             burn=300,
@@ -30,10 +38,10 @@ def corner_plot(
 
         # plot corner
         corner_kwargs: dict = dict(
-            labels=dataset.parameter_names, show_titles=True, truths=x_true.numpy()
+            labels=dataset.parameter_names, show_titles=True, truths=x1
         )
         fig = None
         if plot_prior:
-            fig = corner.corner(x0.numpy(), color="black", **corner_kwargs)
+            fig = corner.corner(x0, color="black", **corner_kwargs)
         fig = corner.corner(x_cnf, color="blue", fig=fig, **corner_kwargs)
         fig = corner.corner(x_mcmc, color="green", fig=fig, **corner_kwargs)

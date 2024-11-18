@@ -5,7 +5,7 @@ from lightning import LightningModule
 
 
 class ConditionalFlowMatching(LightningModule):
-    def __init__(self, coupling_jitter=0.0, lr=3e-4):
+    def __init__(self, lr=3e-4):
         super().__init__()
         self.save_hyperparameters()
 
@@ -16,21 +16,21 @@ class ConditionalFlowMatching(LightningModule):
         if verbose:
             print("Pushing data through flow")
         ts = torch.arange(0, 1, 1 / n_steps, device=self.device).expand(x.shape[0], -1)
-        x, y = x.to(self.device), y.to(self.device).expand((x.shape[0], *y.shape))
+        x = torch.as_tensor(x).to(self.device)
+        y = torch.as_tensor(y).to(self.device).expand((x.shape[0], *y.shape))
         with torch.no_grad():
-            for t in tqdm(ts.T, disable=not verbose):
-                x = x + self(t, x, y) / n_steps  # ? is /n_steps supposed to be here?
+            for t in ts.T:
+                x = x + self(t, x, y) / n_steps
         return x
 
-
     def training_step(self, batch, batch_idx):
-        t, x_t, d_x, y, x0, x1 = batch # y is the observation corresponding to the distribution x1 (e.g. the observed noisy sine wave)
-        flow = self(t, x_t, y) 
-        loss = nn.functional.mse_loss(flow, d_x)
-        self.log("flow_loss", loss, prog_bar=True, on_epoch=True, on_step=False)
+        t, xt, dx, y = batch
+        flow = self(t, xt, y)
+        loss = nn.functional.mse_loss(flow, dx)
+        self.log("flow_loss", loss, prog_bar=True)
         return loss
 
-    def __call__(self, t, x, y):
+    def __call__(self, t, xt, y):
         raise NotImplementedError
 
 
@@ -59,6 +59,6 @@ class MLPCNF(ConditionalFlowMatching):
             norm=norm,
         )
 
-    def __call__(self, t, x, y):
-        h = torch.cat([t.unsqueeze(-1), x, y], dim=-1)
+    def __call__(self, t, xt, y):
+        h = torch.cat([t.unsqueeze(-1), xt, y], dim=-1)
         return self.flow(h)
