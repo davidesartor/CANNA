@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 from tqdm.auto import tqdm
 import corner
 from mcmc import emcee_sample
@@ -24,7 +25,10 @@ def corner_plot(
         x1 = dataset.conditional_map(np.ones(1), x1, x1).squeeze()
 
         # sample using CNF
-        x_cnf = model.push(x0, y, verbose=verbose, n_steps=ode_steps).cpu().numpy()
+        x_cnf = model.push(
+            torch.as_tensor(x0), torch.as_tensor(y), verbose=verbose, n_steps=ode_steps
+        )
+        x_cnf = x_cnf.cpu().numpy()
 
         # sample using MCMC
         x_mcmc = emcee_sample(

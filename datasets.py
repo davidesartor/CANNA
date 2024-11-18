@@ -87,7 +87,7 @@ class SinusoidDataset(PosteriorFlowDataset):
         self.observation_times = np.arange(0.0, observation_time, sample_rate)
         self.priors = [amp_prior, omg_prior, phi_prior]
         noise_cov = noise_cov * np.eye(len(self.observation_times))
-        self.noise = multivariate_normal(cov=noise_cov)
+        self.noise = multivariate_normal(cov=noise_cov)  # type: ignore
 
     @property
     def parameter_names(self):
