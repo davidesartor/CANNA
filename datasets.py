@@ -13,8 +13,7 @@ class PosteriorFlowDataset[Observation](eqx.Module):
     def sample_observation(self, rng: Key, params: list[Param]) -> Observation:
         raise NotImplementedError
 
-    @eqx.filter_jit
-    def get_train_sample(self, rng: Key):
+    def train_sample(self, rng: Key):
         rng_t, rng_x0, rng_x1, rng_y, rng_jitter = jr.split(rng, 5)
         t = jr.uniform(rng_t)
         x0 = self.sample_params(rng_x0)
@@ -32,9 +31,8 @@ class PosteriorFlowDataset[Observation](eqx.Module):
         dx = jax.jacobian(flat_cond_map)(t)
         return t, xt, dx, y
 
-    @eqx.filter_jit
-    def get_train_batch(self, rng: Key, batch_size: int):
-        return jax.vmap(self.get_train_sample)(jr.split(rng, batch_size))
+    def train_batch(self, rng: Key, batch_size: int):
+        return jax.vmap(self.train_sample)(jr.split(rng, batch_size))
 
     def as_trivial(self, params: list[Param]) -> list[Trivial]:
         return [

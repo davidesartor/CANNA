@@ -1,34 +1,34 @@
-import jax
-import jax.numpy as jnp
-import jax.random as jr
-from flax import nnx
-from jaxtyping import Key, Float, Array, Scalar
+from datasets import *
 import optax
+from flax import linen as nn
 from tqdm import tqdm
 
 
-class MLPCNF(nnx.Sequential):
-    def __init__(self, x_dim, y_dim, hidden_dim=512, depth=4, *, rngs: nnx.Rngs):
-        layers = []
-        layers.append(nnx.Linear(1 + x_dim + y_dim, hidden_dim, rngs=rngs))
-        for _ in range(depth):
-            layers.append(nnx.RMSNorm(hidden_dim, rngs=rngs))
-            layers.append(nnx.Linear(hidden_dim, hidden_dim, rngs=rngs))
-            layers.append(jax.nn.gelu)
-        layers.append(nnx.Linear(hidden_dim, x_dim, rngs=rngs))
-        super().__init__(*layers)
+class MLPCNF(nn.Module):
+    dim: int = 512
+    depth: int = 4
+    norm: bool = True
 
+    @nn.compact
     def __call__(
-        self, t: Scalar, xt: Float[Array, "x"], y: Float[Array, "y"]
-    ) -> Float[Array, "x"]:
+        self, t: Scalar, xt: Float[Array, "xt_flat"], y: Float[Array, "y_flat"]
+    ) -> Float[Array, "xt_flat"]:
         h = jnp.concatenate([t[..., None], xt, y], axis=-1)
-        return super().__call__(h)
+        for _ in range(self.depth - 1):
+            h = nn.Dense(self.dim)(h)
+            h = nn.silu(h)
+            if self.norm:
+                h = nn.RMSNorm()(h)
+        h = nn.Dense(xt.shape[-1])(h)
+        return h
 
-    @nnx.jit(static_argnames="n_steps")
+    def loss(self, batch):
+        t, xt, dx, y = batch
+        pred = self(t, xt, y)
+        return optax.l2_loss(pred, dx).mean()
+
     def push(self, x0: Float[Array, "n x"], y: Float[Array, "y"], n_steps=4):
-        @nnx.scan(in_axes=(None, nnx.Carry, 0))
-        @nnx.vmap(in_axes=(None, 0, None))
-        def runje_kutta(flow, x, t):
+        def runje_kutta_step(flow, x, t):
             k1 = flow(t, x, y)
             k2 = flow(t + dt / 2, x + k1 * dt / 2, y)
             k3 = flow(t + dt / 2, x + k2 * dt / 2, y)
@@ -38,55 +38,54 @@ class MLPCNF(nnx.Sequential):
 
         dt = 1 / n_steps
         ts = dt * jnp.arange(n_steps)
-        x1, xt = runje_kutta(self, x0, ts)
-        return x1
+        x1, xt = nn.scan(runje_kutta_step, variable_broadcast="params")(self, x0, ts)
+        return x1, xt
 
-
-class Trainer(nnx.Module):
-    def __init__(
+    @nn.nowrap
+    def fit(
         self,
-        dataset,
-        model,
-        batch_size=64,
-        epochs=100,
-        steps_per_epoch=64,
+        dataset: PosteriorFlowDataset,
+        epochs=10,
+        batch_size=1024,
+        steps_per_epoch=256,
         learning_rate=3e-4,
-        *,
-        rngs: nnx.Rngs,
+        weight_decay=1e-4,
+        seed=0,
     ):
-        self.dataset = dataset
-        self.model = model
-        self.batch_size = batch_size
-        self.epochs = epochs
-        self.steps_per_epoch = steps_per_epoch
-        self.optimizer = nnx.Optimizer(self.model, optax.adam(learning_rate))
-        self.rngs = rngs
+        rng = jr.key(seed)
+        rng, rng_init = jr.split(rng)
+        params = self.init(rng_init, dataset.train_sample(jr.key(0)), method="loss")
+        optimizer = optax.adamw(learning_rate, weight_decay=weight_decay)
+        opt_state = optimizer.init(params)
 
-    @nnx.jit
-    def train_epoch(self):
-        @nnx.scan
-        def optimization_step(trainer, batch):
-            @nnx.value_and_grad
-            def loss_fn(flow, batch):
-                t, xt, dx, y = batch
-                pred = jax.vmap(flow)(t, xt, y)
-                return optax.l2_loss(pred, dx).mean()
+        @jax.jit
+        def generate_batches(rng):
+            get_batch = lambda rng: dataset.train_batch(rng, batch_size)
+            return jax.vmap(get_batch)(jr.split(rng, steps_per_epoch))
 
-            loss, grads = loss_fn(trainer.model, batch)
-            trainer.optimizer.update(grads)
-            return trainer, loss
+        @jax.jit
+        def train_epoch(params, opt_state, batches):
+            def optimization_step(carry, batch):
+                @jax.value_and_grad
+                def loss_fn(params, batch):
+                    return self.apply(params, batch, method="loss")
 
-        @jax.vmap
-        def get_batches(rng):
-            return jax.vmap(self.dataset.get_train_sample)(
-                jr.split(rng, self.batch_size)
+                params, opt_state = carry
+                loss, grads = loss_fn(params, batch)
+                updates, opt_state = optimizer.update(grads, opt_state, params)
+                params = optax.apply_updates(params, updates)
+                carry = (params, opt_state)
+                return carry, loss
+
+            (params, opt_state), losses = jax.lax.scan(
+                optimization_step, (params, opt_state), batches
             )
+            return params, opt_state, losses
 
-        batches = get_batches(jr.split(self.rngs(), self.steps_per_epoch))
-        self, losses = optimization_step(self, batches)
-        return losses
-
-    def fit(self):
-        for _ in (pbar := tqdm(range(self.epochs))):
-            losses = self.train_epoch()
+        loss_log = []
+        for rng in (pbar := tqdm(jr.split(rng, epochs))):
+            batches = generate_batches(rng)
+            params, opt_state, losses = train_epoch(params, opt_state, batches)
             pbar.set_postfix(loss=losses.mean())
+            loss_log.append(losses)
+        return params, jnp.array(loss_log)
