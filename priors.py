@@ -1,15 +1,16 @@
-from jaxtyping import Array, Float, Scalar, Key
+from jaxtyping import Array, Float, Key
 import jax
 import jax.numpy as jnp
 import jax.random as jr
 from jax.scipy import stats
-from flax import nnx
+import equinox as eqx
 
+Scalar = Float[Array, ""]
 Param = Float[Array, "P"]
 Trivial = Float[Array, "T"]
 
 
-class ManifoldDistribution(nnx.Module):
+class Prior(eqx.Module):
     """Base class for prior distributions on manifolds
     Samples are of type P, representing a point on the manifold
     and allow a trivialized representation of type T
@@ -46,10 +47,9 @@ class ManifoldDistribution(nnx.Module):
         raise NotImplementedError
 
 
-class Normal(ManifoldDistribution):
-    def __init__(self, mean: float, std: float):
-        self.mean = mean
-        self.std = std
+class Normal(Prior):
+    mean: float
+    std: float
 
     def sample(self, rng: Key) -> Param:
         return self.mean + self.std * jr.normal(rng, shape=(1,))
@@ -69,10 +69,9 @@ class Normal(ManifoldDistribution):
         return (x - self.mean) / self.std
 
 
-class Uniform(ManifoldDistribution):
-    def __init__(self, low: float, high: float):
-        self.low = low
-        self.high = high
+class Uniform(Prior):
+    low: float
+    high: float
 
     def sample(self, rng: Key) -> Param:
         return jr.uniform(rng, shape=(1,), minval=self.low, maxval=self.high)
@@ -92,10 +91,9 @@ class Uniform(ManifoldDistribution):
         return 2 * (x - self.low) / (self.high - self.low) - 1
 
 
-class LogUniform(ManifoldDistribution):
-    def __init__(self, low: float, high: float):
-        self.low = low
-        self.high = high
+class LogUniform(Prior):
+    low: float
+    high: float
 
     def sample(self, rng: Key) -> Param:
         log_low, log_high = jnp.log(self.low), jnp.log(self.high)
@@ -120,9 +118,8 @@ class LogUniform(ManifoldDistribution):
         return 2 * (jnp.log(x) - log_low) / (log_high - log_low) - 1
 
 
-class PeriodicUniform(ManifoldDistribution):
-    def __init__(self, scale: float):
-        self.scale = scale
+class PeriodicUniform(Prior):
+    scale: float
 
     def sample(self, rng: Key) -> Param:
         return jr.uniform(rng, shape=(1,), minval=0.0, maxval=self.scale * 2 * jnp.pi)
