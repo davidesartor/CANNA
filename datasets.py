@@ -113,9 +113,11 @@ class SinusoidDataset(PosteriorFlowDataset):
         sample_rate=1.0,
         observation_time=16.0,
         noise_std=0.1,
+        coupling_jitter=0.0,
     ):
         self.param_names = ["A", "ω", "φ"]
         self.priors = [amp_prior, omg_prior, phi_prior]
+        self.coupling_jitter = coupling_jitter
 
         self.observation_times = jnp.arange(0.0, observation_time, sample_rate)
         self.noise_mean = jnp.zeros(len(self.observation_times))

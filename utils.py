@@ -54,17 +54,3 @@ def corner_plot(
             fig = corner.corner(x0, color="black", **corner_kwargs)
         fig = corner.corner(x_cnf, color="blue", fig=fig, **corner_kwargs)
         # fig = corner.corner(x_mcmc, color="green", fig=fig, **corner_kwargs)
-
-
-
-
-dataset
-params = dataset.sample_params(jr.key(0))
-
-def eemc_log_prob(x):
-
-var = 1
-
-
-def f(x):
-    return x+var
