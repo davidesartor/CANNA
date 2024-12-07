@@ -16,6 +16,7 @@ def corner_plot(
     examples=1,
     ode_steps=8,
     plot_prior=False,
+    seed=0,
 ):
     @jax.jit
     def sample(rng):
@@ -27,8 +28,8 @@ def corner_plot(
         x0_triv = jnp.concat(jax.vmap(dataset.as_trivial)(x0), axis=-1)
         return x0, x1, y, x0_triv
 
-    for i in tqdm(range(examples)):
-        x0, x1, y, x0_triv = sample(jr.key(i))
+    for rng in tqdm(jr.split(jr.key(seed), examples)):
+        x0, x1, y, x0_triv = sample(rng)
         truths = np.array(jnp.concat(x1, axis=-1))
 
         # sample using CNF
@@ -53,3 +54,17 @@ def corner_plot(
             fig = corner.corner(x0, color="black", **corner_kwargs)
         fig = corner.corner(x_cnf, color="blue", fig=fig, **corner_kwargs)
         # fig = corner.corner(x_mcmc, color="green", fig=fig, **corner_kwargs)
+
+
+
+
+dataset
+params = dataset.sample_params(jr.key(0))
+
+def eemc_log_prob(x):
+
+var = 1
+
+
+def f(x):
+    return x+var

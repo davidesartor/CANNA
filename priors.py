@@ -119,28 +119,26 @@ class LogUniform(Prior):
 
 
 class PeriodicUniform(Prior):
-    scale: float
+    high: float
 
     def sample(self, rng: Key) -> Param:
-        return jr.uniform(rng, shape=(1,), minval=0.0, maxval=self.scale * 2 * jnp.pi)
+        return jr.uniform(rng, shape=(1,), minval=0.0, maxval=self.high)
 
     def log_pdf(self, x: Param):
-        return stats.uniform.logpdf(x, scale=self.scale * 2 * jnp.pi)
+        return stats.uniform.logpdf(x, scale=self.high)
 
     def geodesic(self, t: Scalar, x0: Param, x1: Param) -> Param:
-        logmap = jnp.arctan2(
-            jnp.sin((x1 - x0) / self.scale), jnp.cos((x1 - x0) / self.scale)
-        )
-        xt = (x0 + t * logmap) % self.scale  # exponential map
+        s = 2 * jnp.pi / self.high
+        logmap = jnp.arctan2(jnp.sin((x1 - x0) * s), jnp.cos((x1 - x0) * s))
+        xt = (x0 + t * logmap) % self.high  # exponential map
         return xt
 
     def trivialization(self, x: Trivial) -> Param:
         """map from sin and cos to [0, scale]"""
         sin, cos = jnp.split(x, 2, axis=-1)
-        return jnp.arctan2(sin, cos) * self.scale
+        return jnp.arctan2(sin, cos) * self.high / (2 * jnp.pi)
 
     def trivialization_pinv(self, x: Param) -> Trivial:
         """map from [0, scale] to sin and cos"""
-        return jnp.concatenate(
-            [jnp.sin(x / self.scale), jnp.cos(x / self.scale)], axis=-1
-        )
+        s = 2 * jnp.pi / self.high
+        return jnp.concatenate([jnp.sin(x * s), jnp.cos(x * s)], axis=-1)
