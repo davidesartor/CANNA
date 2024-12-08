@@ -1,10 +1,14 @@
 from priors import *
 
 
-class PosteriorFlowDataset[Observation](eqx.Module):
+class PosteriorFlowDataset[Observation: Array](eqx.Module):
     priors: list[Prior]
     param_names: list[str]
     coupling_jitter: float
+
+    def xy_shape(self):
+        _, xt, _, y = self.train_sample(rng=jr.key(0))
+        return xt.shape, y.shape
 
     def sample_params(self, rng: Key) -> list[Param]:
         rngs = jr.split(rng, len(self.priors))

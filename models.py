@@ -1,47 +1,62 @@
 from datasets import *
 import optax
-from flax import linen as nn
 from tqdm import tqdm
 
 
-class MLPCNF(nn.Module):
-    dim: int = 512
-    depth: int = 4
-    norm: bool = True
+class MLPCNF(eqx.Module):
+    layers: list[eqx.nn.Linear]
 
-    @nn.compact
+    def __init__(
+        self,
+        x_dim: int,
+        y_dim: int,
+        hidden: int = 512,
+        depth: int = 4,
+        norm: bool = True,
+        *,
+        rng: Key
+    ):
+        dims=[x_dim+y_dim+1]+[hidden for _ in range(depth-1)]+[x_dim]
+        rngs=jr.split(rng,depth)
+        self.layers=[
+            eqx.nn.Linear(in_dim,out_dim,key=k)
+            for in_dim, out_dim, k in zip(dims[:-1],dims[1:],rngs)
+        ]
+
+        
+    
     def __call__(
         self, t: Scalar, xt: Float[Array, "xt_flat"], y: Float[Array, "y_flat"]
     ) -> Float[Array, "xt_flat"]:
         h = jnp.concatenate([t[..., None], xt, y], axis=-1)
-        for _ in range(self.depth - 1):
-            h = nn.Dense(self.dim)(h)
-            h = nn.silu(h)
-            if self.norm:
-                h = nn.RMSNorm()(h)
-        h = nn.Dense(xt.shape[-1])(h)
+        for layer in self.layers[:-1]:
+            h = layer(h)
+            h = jax.nn.silu(h)
+            #if self.norm:
+            #    h = nn.RMSNorm()(h)
+        h = self.layers[-1](h)
         return h
 
     def loss(self, batch):
         t, xt, dx, y = batch
-        pred = self(t, xt, y)
+        pred = jax.vmap(self)(t, xt, y)
         return optax.l2_loss(pred, dx).mean()
 
     def push(self, x0: Float[Array, "n x"], y: Float[Array, "y"], n_steps=4):
-        def runje_kutta_step(flow, x, t):
-            k1 = flow(t, x, y)
-            k2 = flow(t + dt / 2, x + k1 * dt / 2, y)
-            k3 = flow(t + dt / 2, x + k2 * dt / 2, y)
-            k4 = flow(t + dt, x + k3 * dt, y)
+        def runje_kutta_step(x, t):
+            k1 = self(t, x, y)
+            k2 = self(t + dt / 2, x + k1 * dt / 2, y)
+            k3 = self(t + dt / 2, x + k2 * dt / 2, y)
+            k4 = self(t + dt, x + k3 * dt, y)
             next_x = x + (k1 + 2 * k2 + 2 * k3 + k4) * dt / 6
             return next_x, x
 
         dt = 1 / n_steps
         ts = dt * jnp.arange(n_steps)
-        x1, xt = nn.scan(runje_kutta_step, variable_broadcast="params")(self, x0, ts)
+        x1, xt = jax.lax.scan(runje_kutta_step, x0, ts)
         return x1, xt
 
-    @nn.nowrap
+    #@nn.nowrap
     def fit(
         self,
         dataset: PosteriorFlowDataset,
