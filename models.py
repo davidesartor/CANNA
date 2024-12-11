@@ -3,15 +3,44 @@ import optax
 from tqdm import tqdm
 
 
-class TimestepEmbedder(eqx.Module):
+class FeedFoward(eqx.Module):
     lin1: eqx.nn.Linear
     lin2: eqx.nn.Linear
+
+    def __init__(self, in_dim: int, hidden_dim: int, out_dim: int, *, rng: Key):
+        rng_lin1, rng_lin2 = jr.split(rng, 2)
+        self.lin1 = eqx.nn.Linear(in_dim, hidden_dim, key=rng_lin1)
+        self.lin2 = eqx.nn.Linear(hidden_dim, out_dim or in_dim, key=rng_lin2)
+
+    def __call__(self, x: Array):
+        return self.lin2(jax.nn.silu(self.lin1(x)))
+
+
+class ResBlock(eqx.Module):
+    norm: eqx.nn.LayerNorm
+    modulation: eqx.nn.Linear
+    fc: FeedFoward
+
+    def __init__(self, dim: int, expand: int = 2, *, rng: Key):
+        rng_norm, rng_fc = jr.split(rng, 2)
+        self.fc = FeedFoward(dim, dim * expand, dim, rng=rng_fc)
+        self.norm = eqx.nn.LayerNorm(dim, use_weight=False, use_bias=False)
+        self.modulation = eqx.nn.Linear(dim, 3 * dim, key=rng_norm)
+        self.modulation = eqx.tree_at(
+            lambda x: x.weight, self.modulation, replace_fn=lambda x: x * 0.0
+        )
+
+    def __call__(self, x, y):
+        shift, scale, gate = jnp.split(self.modulation(y), 3, axis=-1)
+        return x + gate * self.fc(shift + (1 + scale) * self.norm(x))
+
+
+class TimestepEmbedder(eqx.Module):
+    fc: FeedFoward
     freqs: Array
 
     def __init__(self, dim: int, frequencies: int = 256, max_period=1000, *, rng: Key):
-        rng_lin1, rng_lin2 = jr.split(rng, 2)
-        self.lin1 = eqx.nn.Linear(frequencies, dim, key=rng_lin1)
-        self.lin2 = eqx.nn.Linear(dim, dim, key=rng_lin2)
+        self.fc = FeedFoward(frequencies, dim, dim, rng=rng)
         self.freqs = jnp.exp(
             -jnp.log(max_period) * jnp.linspace(0, 1, frequencies // 2)
         )
@@ -19,75 +48,39 @@ class TimestepEmbedder(eqx.Module):
     def __call__(self, t: Scalar):
         x = t[..., None] * self.freqs
         x = jnp.concat([jnp.cos(x), jnp.sin(x)], axis=-1)
-        x = self.lin2(jax.nn.silu(self.lin1(x)))
+        x = self.fc(x)
         return x
-
-
-class ObsEmbedder(eqx.Module):
-    lin1: eqx.nn.Linear
-    lin2: eqx.nn.Linear
-
-    def __init__(self, y_dim, dim: int, *, rng: Key):
-        rng_lin1, rng_lin2 = jr.split(rng, 2)
-        self.lin1 = eqx.nn.Linear(y_dim, dim, key=rng_lin1)
-        self.lin2 = eqx.nn.Linear(dim, dim, key=rng_lin2)
-
-    def __call__(self, y: Observation):
-        x = self.lin2(jax.nn.silu(self.lin1(y)))
-        return x
-
-
-class ResBlock(eqx.Module):
-    norm: eqx.nn.LayerNorm
-    adaLN: eqx.nn.Linear
-    lin1: eqx.nn.Linear
-    lin2: eqx.nn.Linear
-
-    def __init__(self, dim: int, expand: int = 2, *, rng: Key):
-        rng_norm, rng_lin1, rng_lin2 = jr.split(rng, 3)
-        self.norm = eqx.nn.LayerNorm(dim, use_weight=False, use_bias=False)
-        self.adaLN = eqx.nn.Linear(dim, 3 * dim, key=rng_norm)
-        self.adaLN = eqx.tree_at(
-            lambda x: x.weight, self.adaLN, replace_fn=lambda x: x * 0.0
-        )
-        self.lin1 = eqx.nn.Linear(dim, expand * dim, key=rng_lin1)
-        self.lin2 = eqx.nn.Linear(expand * dim, dim, key=rng_lin2)
-
-    def __call__(self, x, y):
-        shift, scale, gate = jnp.split(self.adaLN(y), 3, axis=-1)
-        h = shift + (1 + scale) * self.norm(x)
-        h = self.lin2(jax.nn.silu(self.lin1(h)))
-        return x + gate * h
 
 
 class MLPCNF(eqx.Module):
     t_emb: TimestepEmbedder
-    y_emb: ObsEmbedder
-    in_proj: eqx.nn.Linear
-    res_blocks: list[ResBlock]
+    y_emb: FeedFoward
+    x_emb: FeedFoward
+    blocks: list[ResBlock]
     out_proj: eqx.nn.Linear
 
     def __init__(
         self,
         x_dim: int,
         y_dim: int,
-        hidden: int = 256,
-        depth: int = 2,
-        *,
-        rng: Key,
+        dim: int = 64,
+        depth: int = 4,
+        seed=0,
     ):
-        rng, rng_t, rng_y = jr.split(rng, 3)
-        self.t_emb = TimestepEmbedder(hidden, rng=rng_t)
-        self.y_emb = ObsEmbedder(y_dim, hidden, rng=rng_y)
-        rng, rng_in, rng_out = jr.split(rng, 3)
-        self.in_proj = eqx.nn.Linear(x_dim, hidden, key=rng_in)
-        self.res_blocks = [ResBlock(hidden, rng=rng) for rng in jr.split(rng, depth)]
-        self.out_proj = eqx.nn.Linear(hidden, x_dim, key=rng_out)
+        rng_t, rng_y, rng_x, rng_b, rng_out = jr.split(jr.key(seed), 5)
+        self.t_emb = TimestepEmbedder(dim, rng=rng_t)
+        self.y_emb = FeedFoward(y_dim, dim, dim, rng=rng_y)
+        self.x_emb = FeedFoward(x_dim, dim, dim, rng=rng_x)
+        self.blocks = [ResBlock(dim, rng=rng) for rng in jr.split(rng_b, depth)]
+        self.out_proj = eqx.nn.Linear(dim, x_dim, key=rng_out)
 
     def __call__(self, t: Scalar, xt: list[Param], y: Observation) -> list[Param]:
-        c = jax.nn.silu(self.t_emb(t) + self.y_emb(y))
-        h = self.in_proj(jnp.concat(xt, axis=-1))
-        for block in self.res_blocks:
+        x = self.x_emb(jnp.concat(xt, axis=-1))
+        t = self.t_emb(t)
+        y = self.y_emb(y)
+
+        h = c = jax.nn.silu(t + y + x)
+        for block in self.blocks:
             h = block(h, c)
         h = self.out_proj(h)
         return jnp.split(h, h.shape[-1], axis=-1)
@@ -141,9 +134,11 @@ class MLPCNF(eqx.Module):
         @jax.value_and_grad
         def loss_fn(model, batch):
             t, xt, dx, y = batch
+
             pred = jax.vmap(model)(t, xt, y)
             balanced_loss = lambda p, t: optax.l2_loss(p, t).mean() / t.std()
-            return sum(jax.tree.map(balanced_loss, pred, dx))
+            loss = sum(jax.tree.map(balanced_loss, pred, dx))
+            return loss
 
         @eqx.filter_jit
         def train_epoch(model, opt_state, batches):
