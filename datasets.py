@@ -1,14 +1,17 @@
 from priors import *
 
+Observation = Float[Array, "y"]
 
-class PosteriorFlowDataset[Observation: Array](eqx.Module):
+
+class PosteriorFlowDataset(eqx.Module):
     priors: list[Prior]
     param_names: list[str]
     coupling_jitter: float
 
-    def xy_shape(self):
-        _, xt, _, y = self.train_sample(rng=jr.key(0))
-        return xt.shape, y.shape
+    def xy_shapes(self):
+        x = self.sample_params(jr.key(0))
+        y = self.sample_observation(jr.key(0), x)
+        return [el.shape for el in x], y.shape
 
     def sample_params(self, rng: Key) -> list[Param]:
         rngs = jr.split(rng, len(self.priors))
@@ -17,6 +20,11 @@ class PosteriorFlowDataset[Observation: Array](eqx.Module):
     def sample_observation(self, rng: Key, params: list[Param]) -> Observation:
         raise NotImplementedError
 
+    def conditional_map(
+        self, t: Scalar, x0: list[Param], x1: list[Param]
+    ) -> list[Param]:
+        return [prior.geodesic(t, x0, x1) for prior, x0, x1 in zip(self.priors, x0, x1)]
+
     def train_sample(self, rng: Key):
         rng_t, rng_x0, rng_x1, rng_y, rng_jitter = jr.split(rng, 5)
         t = jr.uniform(rng_t)
@@ -24,42 +32,23 @@ class PosteriorFlowDataset[Observation: Array](eqx.Module):
         x1 = self.sample_params(rng_x1)
         y = self.sample_observation(rng_y, x1)
 
-        def flat_cond_map(t):
-            xt = self.conditional_map(t, x0, x1)
-            xt = jnp.concat([x for x in self.as_trivial(xt)], axis=-1)
-            return xt
+        xt = self.conditional_map(t, x0, x1)
+        dx = jax.jacobian(self.conditional_map)(t, x0, x1)
 
-        xt = flat_cond_map(t)
-        xt = xt + self.coupling_jitter * jr.normal(rng_jitter, xt.shape)
-
-        dx = jax.jacobian(flat_cond_map)(t)
+        xt = [
+            x + self.coupling_jitter * jr.normal(k, x.shape)
+            for x, k in zip(xt, jr.split(rng_jitter, len(xt)))
+        ]
         return t, xt, dx, y
 
     def train_batch(self, rng: Key, batch_size: int):
         return jax.vmap(self.train_sample)(jr.split(rng, batch_size))
 
-    def as_trivial(self, params: list[Param]) -> list[Trivial]:
-        return [
-            prior.trivialization_pinv(x).flatten()
-            for prior, x in zip(self.priors, params)
-        ]
-
-    def as_params(self, trivializations: list[Trivial]) -> list[Param]:
-        return [
-            prior.trivialization(x).flatten()
-            for prior, x in zip(self.priors, trivializations)
-        ]
-
-    def conditional_map(
-        self, t: Scalar, x0: list[Param], x1: list[Param]
-    ) -> list[Param]:
-        return [prior.geodesic(t, x0, x1) for prior, x0, x1 in zip(self.priors, x0, x1)]
-
     def log_likelihood(self, params: list[Param], observation: Observation) -> Scalar:
         raise NotImplementedError
 
     def log_prior(self, params: list[Param]):
-        return sum(p.log_pdf(x) for p, x in zip(self.priors, params))
+        return sum(p.logpdf(x) for p, x in zip(self.priors, params))
 
     def log_posterior(self, params: list[Param], observation: Observation) -> Scalar:
         return self.log_prior(params) + self.log_likelihood(params, observation)
@@ -90,12 +79,12 @@ class PointDataset(PosteriorFlowDataset):
         noise_cov_sqrt = noise_std * jr.uniform(jr.key(seed), (dim, dim))
         self.noise_cov = noise_cov_sqrt @ noise_cov_sqrt.T
 
-    def sample_observation(self, rng: Key, params: list[Param]) -> Array:
+    def sample_observation(self, rng: Key, params: list[Param]) -> Observation:
         x = jnp.concatenate(params, axis=-1)
         noise = jr.multivariate_normal(rng, self.noise_mean, self.noise_cov)
         return x + noise
 
-    def log_likelihood(self, params: list[Param], observation: Array):
+    def log_likelihood(self, params: list[Param], observation: Observation):
         res = observation - jnp.concatenate(params, axis=-1)
         return stats.multivariate_normal.logpdf(res, self.noise_mean, self.noise_cov)
 
@@ -132,10 +121,10 @@ class SinusoidDataset(PosteriorFlowDataset):
         t = self.observation_times
         return amp * jnp.sin(omg * t + phi)
 
-    def sample_observation(self, rng: Key, params: list[Param]) -> Array:
+    def sample_observation(self, rng: Key, params: list[Param]) -> Observation:
         noise = jr.multivariate_normal(rng, self.noise_mean, self.noise_cov)
         return self.clean_signal(params) + noise
 
-    def log_likelihood(self, params: list[Param], observation: Array):
+    def log_likelihood(self, params: list[Param], observation: Observation):
         res = observation - self.clean_signal(params)
         return stats.multivariate_normal.logpdf(res, self.noise_mean, self.noise_cov)
